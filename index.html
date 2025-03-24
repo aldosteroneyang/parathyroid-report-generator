@@ -1,0 +1,1855 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>甲狀旁腺報告產生器</title>
+  <!-- Handsontable CSS & JS -->
+  <link href="https://cdn.jsdelivr.net/npm/handsontable@13.1.0/dist/handsontable.full.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/handsontable@13.1.0/dist/handsontable.full.min.js"></script>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      max-width: 800px;
+      margin: 10px auto;
+      padding: 10px;
+      background: #f5f5f5;
+    }
+    
+    .container {
+      display: grid;
+      grid-template-columns: 3fr 1fr;
+      gap: 10px;
+      background: white;
+      padding: 15px;
+      border-radius: 6px;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+    }
+    
+    .input-section {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+    
+    .sidebar {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    
+    button {
+      padding: 8px;
+      border: none;
+      border-radius: 4px;
+      background: #5cb85c;
+      color: white;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    
+    button:hover {
+      background: #4cae4c;
+    }
+    
+    .notification {
+      position: fixed;
+      bottom: 15px;
+      right: 15px;
+      padding: 8px 15px;
+      background: rgba(0, 0, 0, 0.8);
+      color: white;
+      border-radius: 4px;
+      display: none;
+    }
+    
+    .reports-view {
+      margin-top: 10px;
+      border-top: 1px solid #ddd;
+      padding-top: 10px;
+    }
+    
+    .report-box {
+      background: #f9f9f9;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      padding: 10px;
+      margin-bottom: 10px;
+      white-space: pre-wrap;
+    }
+    
+    h2 {
+      margin: 0 0 10px 0;
+      font-size: 18px;
+    }
+    
+    h3 {
+      margin: 5px 0;
+      color: #333;
+      font-size: 16px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="input-section">
+      <h2>Parathyroid Scan Report Generator</h2>
+      <div id="hot-container" style="height: 250px; overflow: hidden; margin-bottom: 10px;"></div>
+    </div>
+    <div class="sidebar">
+      <button onclick="copyReport('findings')">Copy Findings</button>
+      <button onclick="copyReport('impression')">Copy Impression</button>
+      <button onclick="clearTable()">Clear Table</button>
+      <button onclick="exportTableData()">Export Table Data</button>
+    </div>
+  </div>
+  
+  <div class="reports-view">
+    <h3>Findings</h3>
+    <div id="findings-report" class="report-box"></div>
+    
+    <h3>Impression</h3>
+    <div id="impression-report" class="report-box"></div>
+  </div>
+  
+  <div id="notification" class="notification"></div>
+
+  <script>
+    // Constants for the sites and radioactivity options
+    const THYROID_SITES = [
+      'Left superior', 'Left posterior', 'Left inferior',
+      'Right superior', 'Right posterior', 'Right inferior'
+    ];
+    
+    const ECTOPIC_SITES = [
+      'Anterior mediastinal', 'Left retrosternal', 'Left cervical',
+      'Left anterior mediastinal', 'Left paratracheal',
+      'Right retrosternal', 'Right cervical',
+      'Right anterior mediastinal', 'Right paratracheal'
+    ];
+    
+    const FOREARM_SITES = [
+      'Left forearm', 'Right forearm'
+    ];
+    
+    const THYROID_ONLY_SITES = [
+      'Left', 'Right'
+    ];
+    
+    // Create all valid site options
+    const SITES = [...THYROID_SITES, ...ECTOPIC_SITES, ...FOREARM_SITES, ...THYROID_ONLY_SITES];
+    
+    // Radioactivity options for different site types
+    const THYROID_ECTOPIC_RADIOACTIVITY = ['Increased', 'Mildly increased', 'Faint', 'Not increased'];
+    const FOREARM_RADIOACTIVITY = ['Hot spots', 'Hot spot', 'Faint spots', 'Faint spot', 'Hot and faint spots', 'Suspicious spot', 'Not found'];
+    const THYROID_ONLY_RADIOACTIVITY = ['Increased', 'Mildly increased'];
+    
+    // 異位部位特有的選項（移除 Not increased）
+    const ECTOPIC_RADIOACTIVITY = ['Increased', 'Mildly increased', 'Faint'];
+    
+    // Map to track location status
+    let locationStatusMap = new Map();
+    // Hot instance
+    let hot;
+    
+    // Initialize the location map
+    function initLocationMap() {
+      // 我們不再需要跟踪之前選擇過的項目
+      // locationStatusMap.clear();
+      // SITES.forEach(site => {
+      //   locationStatusMap.set(site, '');
+      // });
+      
+      // 如果仍然需要初始化空的 locationStatusMap，可以保留下面一行
+      // locationStatusMap = new Map();
+    }
+    
+    // Custom editor for Site column with fuzzy search
+    class SiteAutocompleteEditor extends Handsontable.editors.TextEditor {
+      constructor(hotInstance) {
+        super(hotInstance);
+      }
+      
+      prepare(row, col, prop, td, originalValue, cellProperties) {
+        super.prepare(row, col, prop, td, originalValue, cellProperties);
+        
+        if (!this.dropdown) {
+          this.dropdown = document.createElement('div');
+          this.dropdown.className = 'site-autocomplete-dropdown';
+          this.dropdown.style.position = 'absolute';
+          this.dropdown.style.backgroundColor = 'white';
+          this.dropdown.style.border = '1px solid #ccc';
+          this.dropdown.style.maxHeight = '200px';
+          this.dropdown.style.overflow = 'auto';
+          this.dropdown.style.zIndex = 1000;
+          this.dropdown.style.display = 'none';
+          this.dropdown.style.width = '100%';
+          document.body.appendChild(this.dropdown);
+          
+          this.dropdown.addEventListener('mousedown', (e) => {
+            e.stopPropagation();
+          });
+        }
+      }
+      
+      open() {
+        // 在呼叫 super.open() 前先保存一些信息，避免在開啟過程中丟失上下文
+        try {
+          // 嘗試獲取當前編輯的座標
+          this.currentCoords = this.TD ? {
+            row: this.TD.parentNode.rowIndex - 1, // 調整為 0-based 索引
+            col: this.TD.cellIndex
+          } : null;
+        } catch (e) {
+          console.warn('無法從 TD 獲取座標:', e);
+          this.currentCoords = null;
+        }
+        
+        super.open();
+        
+        // 使用更安全的方式嘗試獲取初始行號
+        try {
+          this.initialRow = this.currentCoords ? this.currentCoords.row : 0;
+          
+          // 如果不能從 TD 獲取，嘗試從 getActiveEditor 獲取
+          if (this.initialRow === undefined && this.hot) {
+            const activeEditor = this.hot.getActiveEditor();
+            if (activeEditor && activeEditor.row !== undefined) {
+              this.initialRow = activeEditor.row;
+            }
+          }
+          
+          // 如果還不能獲取，最後嘗試從 getSelectedRange 獲取
+          if (this.initialRow === undefined && this.hot && this.hot.getSelectedRange && this.hot.getSelectedRange()) {
+            this.initialRow = this.hot.getSelectedRange().from.row;
+          }
+        } catch (e) {
+          console.warn('無法獲取初始行號，使用默認值 0:', e);
+          this.initialRow = 0;
+        }
+        
+        this.showDropdown();
+        
+        if (this.globalMousedownListener) {
+          document.removeEventListener('mousedown', this.globalMousedownListener);
+        }
+        
+        if (!this.inputListenerAdded) {
+          this.TEXTAREA.addEventListener('input', () => {
+            this.showDropdown();
+          });
+          
+          this.TEXTAREA.addEventListener('keydown', (e) => {
+            if (this.dropdown.style.display === 'none' || !this.items || this.items.length === 0) {
+              if (e.key !== 'Enter' && e.key !== 'Escape') {
+                return;
+              }
+            }
+            
+            if (e.key === 'ArrowDown') {
+              e.preventDefault();
+              e.stopPropagation();
+              this.selectNextItem();
+            } else if (e.key === 'ArrowUp') {
+              e.preventDefault();
+              e.stopPropagation();
+              this.selectPrevItem();
+            } else if (e.key === 'Enter') {
+              if (this.selectedItem) {
+                e.preventDefault();
+                e.stopPropagation();
+                this.selectCurrentItem();
+                this.finishEditing();
+              }
+            } else if (e.key === 'Escape') {
+              this.hideDropdown();
+            } else if (e.key === 'Tab') {
+              this.hideDropdown();
+            }
+          });
+          
+          this.inputListenerAdded = true;
+        }
+        
+        this.globalMousedownListener = (e) => {
+          if (this.dropdown.style.display === 'block' && 
+              !this.dropdown.contains(e.target) && 
+              !this.TEXTAREA.contains(e.target)) {
+            this.hideDropdown();
+          }
+        };
+        document.addEventListener('mousedown', this.globalMousedownListener);
+      }
+      
+      close() {
+        if (this.globalMousedownListener) {
+          document.removeEventListener('mousedown', this.globalMousedownListener);
+          this.globalMousedownListener = null;
+        }
+        
+        this.hideDropdown();
+        super.close();
+      }
+      
+      // 在 TextEditor 中新增一個方法，用於更安全地獲取當前行號
+      getCurrentRow() {
+        let row = 0;
+        
+        try {
+          // 優先使用 this.currentCoords
+          if (this.currentCoords && this.currentCoords.row !== undefined) {
+            return this.currentCoords.row;
+          }
+          
+          // 然後嘗試使用 this.selectedRow
+          if (this.selectedRow !== undefined) {
+            return this.selectedRow;
+          }
+          
+          // 然後嘗試從 active editor 獲取
+          if (this.hot) {
+            const activeEditor = this.hot.getActiveEditor();
+            if (activeEditor && activeEditor.row !== undefined) {
+              return activeEditor.row;
+            }
+          }
+          
+          // 然後嘗試從 getSelectedRange 獲取
+          if (this.hot && this.hot.getSelectedRange && this.hot.getSelectedRange()) {
+            return this.hot.getSelectedRange().from.row;
+          }
+          
+          // 最後使用 initialRow
+          if (this.initialRow !== undefined) {
+            return this.initialRow;
+          }
+        } catch (e) {
+          console.warn('getCurrentRow 發生錯誤，返回默認值 0:', e);
+        }
+        
+        return 0;
+      }
+
+      finishEditing() {
+        if (this.selectedItem) {
+          const value = this.selectedItem;
+          this.hideDropdown();
+          this.TEXTAREA.value = value;
+          
+          // 保存當前行，以便在 setTimeout 回調中使用
+          const savedRow = this.getCurrentRow();
+          
+          setTimeout(() => {
+            try {
+              super.finishEditing();
+              
+              // 使用之前保存的行號
+              const row = savedRow;
+              const siteValue = value;
+              
+              // 進一步的安全檢查
+              if (!this.hot) {
+                console.error('hot 實例不可用');
+                return;
+              }
+              
+              // 檢查是否真的改變了值
+              const oldValue = this.hot.getDataAtCell(row, 0);
+              const isRealChange = oldValue !== siteValue;
+              
+              // 只有當值真的改變時才進行更新
+              if (isRealChange) {
+                try {
+                  // 暫停渲染，避免多次觸發事件
+                  this.hot.batchRender(() => {
+                    // 立即更新下拉選項列表和檢查當前值是否合法
+                    updateRadioactivitySource(row, siteValue);
+                    
+                    // 無論如何都設置預設值，確保不會有空值
+                    // 移除判斷條件，直接設置預設值
+                    if (FOREARM_SITES.includes(siteValue)) {
+                      this.hot.setDataAtCell(row, 1, 'Not found');
+                    } else if (THYROID_ONLY_SITES.includes(siteValue)) {
+                      this.hot.setDataAtCell(row, 1, 'Mildly increased');
+                    } else if (ECTOPIC_SITES.includes(siteValue)) {
+                      this.hot.setDataAtCell(row, 1, 'Mildly increased');
+                    } else if (THYROID_SITES.includes(siteValue)) {
+                      this.hot.setDataAtCell(row, 1, 'Mildly increased');
+                    }
+                  });
+                  
+                } catch (e) {
+                  console.error('更新單元格時出錯:', e);
+                }
+              }
+              
+            } catch (e) {
+              console.error('Error in finishEditing:', e);
+            }
+          }, 10);
+        } else {
+          super.finishEditing();
+        }
+      }
+      
+      showDropdown() {
+        const query = this.TEXTAREA.value.toLowerCase();
+        
+        // Fuzzy search logic
+        const searchWords = query.split(' ').filter(word => word.length > 0);
+        let matches = SITES;
+        
+        if (searchWords.length > 0) {
+          matches = SITES.filter(site => {
+            const siteLower = site.toLowerCase();
+            return searchWords.every(word => siteLower.includes(word));
+          });
+        }
+        
+        if (matches.length === 0) {
+          this.hideDropdown();
+          return;
+        }
+        
+        // Update dropdown content
+        this.dropdown.innerHTML = '';
+        this.items = matches;
+        this.selectedItemIndex = -1;
+        this.selectedItem = null;
+        
+        // 獲取當前行，使用更安全的方法
+        const currentRow = this.getCurrentRow();
+        
+        matches.forEach((match, index) => {
+          const item = document.createElement('div');
+          item.className = 'site-autocomplete-item';
+          item.textContent = match;
+          item.style.padding = '8px 10px';
+          item.style.cursor = 'pointer';
+          item.style.borderBottom = '1px solid #f0f0f0';
+          item.style.transition = 'background-color 0.15s ease';
+          
+          item.addEventListener('mouseover', () => {
+            this.selectItem(index);
+          });
+          
+          // 使用閉包將當前行保存在事件處理器中
+          ((savedRow) => {
+            item.addEventListener('click', () => {
+              try {
+                this.TEXTAREA.value = match;
+                this.selectedItem = match;
+                this.selectedRow = savedRow;
+                this.finishEditing();
+              } catch (e) {
+                console.error('項目點擊處理錯誤:', e);
+              }
+            });
+          })(currentRow);
+          
+          this.dropdown.appendChild(item);
+        });
+        
+        // Position dropdown
+        const rect = this.TEXTAREA.getBoundingClientRect();
+        this.dropdown.style.top = (rect.bottom + window.scrollY) + 'px';
+        this.dropdown.style.left = (rect.left + window.scrollX) + 'px';
+        this.dropdown.style.width = rect.width + 'px';
+        this.dropdown.style.maxHeight = '200px';
+        this.dropdown.style.overflowY = 'auto';
+        this.dropdown.style.backgroundColor = 'white';
+        this.dropdown.style.border = '1px solid #ddd';
+        this.dropdown.style.borderRadius = '4px';
+        this.dropdown.style.boxShadow = '0 2px 8px rgba(0,0,0,0.15)';
+        this.dropdown.style.zIndex = '2000';
+        this.dropdown.style.display = 'block';
+      }
+      
+      selectItem(index) {
+        const items = this.dropdown.querySelectorAll('.site-autocomplete-item');
+        items.forEach(item => {
+          item.style.backgroundColor = '';
+          item.style.color = '';
+        });
+        
+        if (index >= 0 && index < items.length) {
+          this.selectedItemIndex = index;
+          this.selectedItem = this.items[index];
+          items[index].style.backgroundColor = '#e6f3ff';
+          items[index].style.color = '#1890ff';
+          items[index].style.fontWeight = '500';
+        }
+      }
+      
+      selectNextItem() {
+        if (!this.items || this.items.length === 0) {
+          return;
+        }
+        
+        let nextIndex;
+        if (this.selectedItemIndex < 0 || this.selectedItemIndex >= this.items.length - 1) {
+          nextIndex = 0; // Loop to first item
+        } else {
+          nextIndex = this.selectedItemIndex + 1;
+        }
+        
+        this.selectItem(nextIndex);
+        
+        // Ensure selected item is visible
+        const items = this.dropdown.querySelectorAll('.site-autocomplete-item');
+        if (items[nextIndex]) {
+          items[nextIndex].scrollIntoView({ block: 'nearest' });
+        }
+      }
+      
+      selectPrevItem() {
+        if (!this.items || this.items.length === 0) {
+          return;
+        }
+        
+        let prevIndex;
+        if (this.selectedItemIndex <= 0) {
+          prevIndex = this.items.length - 1; // Loop to last item
+        } else {
+          prevIndex = this.selectedItemIndex - 1;
+        }
+        
+        this.selectItem(prevIndex);
+        
+        // Ensure selected item is visible
+        const items = this.dropdown.querySelectorAll('.site-autocomplete-item');
+        if (items[prevIndex]) {
+          items[prevIndex].scrollIntoView({ block: 'nearest' });
+        }
+      }
+      
+      selectCurrentItem() {
+        if (this.selectedItem) {
+          this.TEXTAREA.value = this.selectedItem;
+        }
+      }
+      
+      hideDropdown() {
+        if (this.dropdown) {
+          this.dropdown.style.display = 'none';
+        }
+      }
+    }
+    
+    // Update radioactivity dropdown options based on site type
+    function updateRadioactivitySource(row, site) {
+      // 獲取當前行的 radioactivity 值
+      let currentRadioactivity = hot.getDataAtCell(row, 1);
+      let newSource = [];
+      
+      // 根據 site 類型決定 radioactivity 選項
+      if (FOREARM_SITES.includes(site)) {
+        newSource = FOREARM_RADIOACTIVITY;
+      } else if (THYROID_ONLY_SITES.includes(site)) {
+        newSource = THYROID_ONLY_RADIOACTIVITY;
+      } else if (ECTOPIC_SITES.includes(site)) {
+        newSource = ECTOPIC_RADIOACTIVITY;
+      } else if (THYROID_SITES.includes(site)) {
+        newSource = THYROID_ECTOPIC_RADIOACTIVITY;
+      }
+      
+      // 使用 setCellMeta 方法，而不是 updateSettings，避免影響其他行
+      hot.setCellMeta(row, 1, 'source', newSource);
+      
+      // 註：這裡不加入預設值邏輯，因為 afterChange 和 finishEditing 中已經有了
+      // 如果要加上，可以參考下面註釋的代碼
+      /*
+      // 智能預設值邏輯：只在 Radioactivity 為空或不在選單中時自動填入
+      const shouldSetDefaultValue = 
+        !currentRadioactivity || 
+        !newSource.includes(currentRadioactivity);
+        
+      if (shouldSetDefaultValue) {
+        if (FOREARM_SITES.includes(site)) {
+          hot.setDataAtCell(row, 1, 'Not found');
+        } else {
+          hot.setDataAtCell(row, 1, 'Mildly increased');
+        }
+      }
+      */
+      
+      hot.render(); // 重新渲染表格以顯示更改
+    }
+    
+    // Initialize Handsontable
+    function initHandsontable() {
+      const container = document.getElementById('hot-container');
+      
+      // Initial data - one empty row
+      const data = [['', '']];
+      
+      // Custom renderer for Site column
+      const siteRenderer = function(instance, td, row, col, prop, value, cellProperties) {
+        Handsontable.renderers.TextRenderer.apply(this, arguments);
+        
+        if (value && SITES.includes(value)) {
+          td.style.background = '#f0f8ff'; // Light blue background
+        }
+        
+        return td;
+      };
+      
+      hot = new Handsontable(container, {
+        data: data,
+        colHeaders: ['Site', 'Radioactivity'],
+        columns: [
+          {
+            editor: SiteAutocompleteEditor,
+            renderer: siteRenderer
+          },
+          {
+            type: 'dropdown',
+            source: [], // 改為空陣列，避免未選擇 Site 時就顯示選項
+            // 禁止手動輸入，只允許從下拉選單選擇
+            allowInvalid: false,
+            strict: true
+          }
+        ],
+        colWidths: [280, 180],
+        minSpareRows: 1,
+        minRows: 2,
+        contextMenu: true,
+        licenseKey: 'non-commercial-and-evaluation',
+        autoWrapRow: true,
+        autoWrapCol: true,
+        cells: function(row, col) {
+          // 確保每行的 radioactivity 選項根據 site 類型動態設定
+          if (col === 1) {
+            const cellProperties = {};
+            const site = hot ? hot.getDataAtCell(row, 0) : '';
+            
+            // 預設為空陣列
+            cellProperties.source = [];
+            
+            // 只在 site 有值且屬於特定類別時才設定下拉選單
+            if (site) {
+              if (FOREARM_SITES.includes(site)) {
+                cellProperties.source = FOREARM_RADIOACTIVITY;
+              } else if (THYROID_ONLY_SITES.includes(site)) {
+                cellProperties.source = THYROID_ONLY_RADIOACTIVITY;
+              } else if (ECTOPIC_SITES.includes(site)) {
+                cellProperties.source = ECTOPIC_RADIOACTIVITY;
+              } else if (THYROID_SITES.includes(site)) {
+                cellProperties.source = THYROID_ECTOPIC_RADIOACTIVITY;
+              }
+            }
+            
+            return cellProperties;
+          }
+          return {};
+        },
+        afterChange: function(changes, source) {
+          if (source === 'loadData') return;
+          
+          if (changes) {
+            changes.forEach(([row, prop, oldValue, newValue]) => {
+              const rowData = hot.getDataAtRow(row);
+              const site = rowData[0];
+              let radioactivity = rowData[1];
+              
+              // 如果 Site 欄位被更新，需要檢查並更新 Radioactivity 選項
+              if (prop === 0 && newValue !== oldValue && newValue && newValue !== '') {
+                // 更新 radioactivity 選單
+                updateRadioactivitySource(row, newValue);
+
+                // 無論如何都設置預設值，確保不會有空值
+                // 移除判斷條件，直接設置預設值
+                if (FOREARM_SITES.includes(newValue)) {
+                  hot.setDataAtCell(row, 1, 'Not found');
+                } else if (ECTOPIC_SITES.includes(newValue)) {
+                  hot.setDataAtCell(row, 1, 'Mildly increased');
+                } else if (THYROID_ONLY_SITES.includes(newValue)) {
+                  hot.setDataAtCell(row, 1, 'Mildly increased');
+                } else if (THYROID_SITES.includes(newValue)) {
+                  hot.setDataAtCell(row, 1, 'Mildly increased');
+                }
+              }
+              
+              // 當 Radioactivity 被清空時，自動填入預設值
+              if (prop === 1 && newValue === '' && site && site !== '') {
+                if (FOREARM_SITES.includes(site)) {
+                  hot.setDataAtCell(row, 1, 'Not found');
+                } else if (ECTOPIC_SITES.includes(site)) {
+                  hot.setDataAtCell(row, 1, 'Mildly increased');
+                } else if (THYROID_ONLY_SITES.includes(site)) {
+                  hot.setDataAtCell(row, 1, 'Mildly increased');
+                } else if (THYROID_SITES.includes(site)) {
+                  hot.setDataAtCell(row, 1, 'Mildly increased');
+                }
+              }
+            });
+          }
+          
+          // 自動生成報告，無需點擊按鈕
+          setTimeout(() => {
+            generateReport();
+          }, 100);
+        },
+        afterValidate: function(isValid, value, row, prop) {
+          // 在儲存格驗證後，確保 radioactivity 與 site 類型匹配
+          if (isValid && prop === 1) {
+            const site = hot.getDataAtCell(row, 0);
+            if (site) {
+              // 不允許空值
+              if (value === '') {
+                return false;
+              }
+              
+              if (FOREARM_SITES.includes(site) && !FOREARM_RADIOACTIVITY.includes(value)) {
+                return false;
+              } else if (THYROID_ONLY_SITES.includes(site) && !THYROID_ONLY_RADIOACTIVITY.includes(value)) {
+                return false;
+              } else if (ECTOPIC_SITES.includes(site) && !ECTOPIC_RADIOACTIVITY.includes(value)) {
+                return false;
+              } else if (!FOREARM_SITES.includes(site) && !THYROID_ONLY_SITES.includes(site) && !ECTOPIC_SITES.includes(site) && !THYROID_ECTOPIC_RADIOACTIVITY.includes(value)) {
+                return false;
+              }
+            }
+          }
+          return isValid;
+        },
+        beforeRemoveRow: function(index, amount) {
+          // Before removing rows, clear values in locationStatusMap
+          for (let i = index; i < index + amount; i++) {
+            const site = hot.getDataAtCell(i, 0);
+            if (site) {
+              locationStatusMap.set(site, '');
+            }
+          }
+        },
+        beforeKeyDown: function(event) {
+          // 當按下 Delete 或 Backspace 鍵時
+          if (event.keyCode === 46 || event.keyCode === 8) {
+            const selected = hot.getSelected();
+            
+            // 確保有選中區域
+            if (selected && selected.length > 0) {
+              const [rowStart, colStart, rowEnd, colEnd] = selected[0];
+              
+              // 如果選中的是 site column (第一列)
+              if (colStart === 0) {
+                // 獲取當前 Site 值
+                const siteValue = hot.getDataAtCell(rowStart, 0);
+                
+                // 如果本來就沒有值，就不需要特殊處理
+                if (!siteValue || siteValue === '') {
+                  return;
+                }
+                
+                // 阻止默認行為
+                event.stopImmediatePropagation();
+                event.preventDefault();
+                
+                // 刪除該行，使用 splice 方法手動刪除
+                const newData = [...hot.getData()];
+                newData.splice(rowStart, rowEnd - rowStart + 1);
+                hot.loadData(newData);
+                
+                // 重新生成報告
+                setTimeout(() => {
+                  generateReport();
+                }, 100);
+                
+                return false;
+              }
+              
+              // 如果選中的是 Radioactivity 欄位（第二列），阻止清空操作
+              if (colStart === 1) {
+                // 獲取當前行的 Site 值
+                const site = hot.getDataAtCell(rowStart, 0);
+                
+                // 如果 Site 有值，則阻止清空 Radioactivity
+                if (site && site !== '') {
+                  event.stopImmediatePropagation();
+                  event.preventDefault();
+                  return false;
+                }
+              }
+            }
+          }
+        }
+      });
+    }
+    
+    // Sync the map data to the table
+    function syncTableWithMap() {
+      const tableData = [];
+      
+      // Add existing rows
+      for (let i = 0; i < hot.countRows(); i++) {
+        const site = hot.getDataAtCell(i, 0);
+        
+        if (site) {
+          const radioactivity = locationStatusMap.get(site) || hot.getDataAtCell(i, 1);
+          tableData.push([site, radioactivity]);
+        }
+      }
+      
+      // Ensure at least one empty row
+      if (tableData.length === 0 || (tableData[tableData.length-1][0] !== '' && tableData[tableData.length-1][1] !== '')) {
+        tableData.push(['', '']);
+      }
+      
+      hot.loadData(tableData);
+    }
+    
+    // Generate reports
+    function generateReport() {
+      // 直接收集數據，不再需要先同步表格到 locationStatusMap
+      const data = collectDataFromTable();
+      
+      // 生成報告
+      const reports = processReports(data);
+      
+      // 顯示報告
+      document.getElementById('findings-report').textContent = reports.findings;
+      document.getElementById('impression-report').textContent = reports.impression;
+      
+      // 添加跨域通信 - 將報告資料傳送到父頁面
+      sendReportsToParent(reports);
+      
+      showNotification('報告已生成');
+    }
+    
+    // 將報告資料傳送到父頁面 (跨域通信)
+    function sendReportsToParent(reports) {
+      try {
+        // 準備要傳送的資料
+        const reportData = {
+          type: 'parathyroidReport',
+          findings: reports.findings,
+          impression: reports.impression,
+          timestamp: new Date().toISOString()
+        };
+        
+        // 使用 postMessage 將資料傳送到父頁面
+        // '*' 表示允許任何域接收，實際使用時應替換為特定域名以增強安全性
+        window.parent.postMessage(reportData, '*');
+        console.log('報告資料已發送到父頁面');
+      } catch (error) {
+        console.error('向父頁面傳送資料時發生錯誤:', error);
+      }
+    }
+    
+    // 匯出表格資料到父頁面
+    function exportTableData() {
+      try {
+        // 獲取表格中的所有資料
+        const tableData = hot.getData();
+        
+        // 過濾掉完全空白的行
+        const filteredData = tableData.filter(row => row[0] || row[1]);
+        
+        // 準備要傳送的資料包
+        const exportData = {
+          type: 'parathyroidTableData',
+          tableData: filteredData,
+          timestamp: new Date().toISOString()
+        };
+        
+        // 使用 postMessage 將資料傳送到父頁面
+        window.parent.postMessage(exportData, '*');
+        console.log('表格資料已匯出到父頁面');
+        
+        // 顯示通知
+        showNotification('表格資料已匯出');
+      } catch (error) {
+        console.error('匯出表格資料時發生錯誤:', error);
+        showNotification('匯出表格資料失敗');
+      }
+    }
+    
+    // Collect data from table
+    function collectDataFromTable() {
+      const thyroidData = {};
+      const ectopicData = {};
+      const forearmData = {};
+      const thyroidOnlyData = {};
+      
+      // 不再只從 locationStatusMap 讀取數據，而是直接從表格中讀取
+      for (let i = 0; i < hot.countRows(); i++) {
+        const site = hot.getDataAtCell(i, 0);
+        const radioactivity = hot.getDataAtCell(i, 1);
+        
+        // 確保 site 和 radioactivity 都有值，強化檢查
+        if (!site || !radioactivity || radioactivity === '') continue;
+        
+        // 為了支援同一部位多次輸入，使用陣列儲存同一部位的不同狀態
+        if (THYROID_SITES.includes(site)) {
+          if (!thyroidData[site]) {
+            thyroidData[site] = [];
+          }
+          thyroidData[site].push(radioactivity);
+        } else if (ECTOPIC_SITES.includes(site)) {
+          if (!ectopicData[site]) {
+            ectopicData[site] = [];
+          }
+          ectopicData[site].push(radioactivity);
+        } else if (FOREARM_SITES.includes(site)) {
+          if (!forearmData[site]) {
+            forearmData[site] = [];
+          }
+          forearmData[site].push(radioactivity);
+        } else if (THYROID_ONLY_SITES.includes(site)) {
+          if (!thyroidOnlyData[site]) {
+            thyroidOnlyData[site] = [];
+          }
+          thyroidOnlyData[site].push(radioactivity);
+        }
+      }
+      
+      return {
+        thyroid: thyroidData,
+        ectopic: ectopicData,
+        forearm: forearmData,
+        thyroidOnly: thyroidOnlyData
+      };
+    }
+    
+    // Process data to generate report text
+    function processReports(data) {
+      // Intensity mapping (similar to the parathyroid.txt sample)
+      const mappingIntensity = {
+        'Increased': 4,
+        'Mildly increased': 3,
+        'Faint': 2,
+        'Not increased': 1,
+        '': 0
+      };
+      
+      const mappingFindingsIntensities = {
+        '4': 'increased radioactivity in ',
+        '3': 'mildly increased radioactivity in ',
+        '2': 'faint radioactivity in '
+      };
+      
+      // Process thyroid sites
+      let intensitiesByRegions = {};
+      let countsRegions = {};
+      
+      // 新增一個陣列來存儲值為"Not increased"的部位
+      let notIncreasedSites = [];
+      
+      // Group thyroid sites by intensity - 修改處理陣列數據
+      for (const [site, radioactivities] of Object.entries(data.thyroid)) {
+        // 處理每個部位可能有多個放射活性值，選擇最高強度的值
+        for (const radioactivity of radioactivities) {
+          const intensity = mappingIntensity[radioactivity];
+          if (intensity > 1) { // 排除 "Not increased" (1) 和空值 (0)
+            const region = site.toLowerCase().replace('left ', 'left ').replace('right ', 'right ');
+            
+            if (intensitiesByRegions[intensity]) {
+              intensitiesByRegions[intensity].push(region);
+            } else {
+              intensitiesByRegions[intensity] = [region];
+            }
+            countsRegions[region] = (countsRegions[region] || 0) + 1;
+          } else if (intensity === 1) { // "Not increased"
+            const region = site.toLowerCase().replace('left ', 'left ').replace('right ', 'right ');
+            notIncreasedSites.push(region);
+          }
+        }
+      }
+      
+      // Process thyroid-only sites in the same way as regular thyroid sites for findings
+      for (const [site, radioactivities] of Object.entries(data.thyroidOnly)) {
+        // 將每個放射活性值添加到對應強度的列表中
+        for (const radioactivity of radioactivities) {
+          const intensity = mappingIntensity[radioactivity];
+          if (intensity > 0) {
+            const region = site.toLowerCase() + ' thyroid'; // 添加 "thyroid" 使之與其他描述一致
+            
+            if (intensitiesByRegions[intensity]) {
+              intensitiesByRegions[intensity].push(region);
+            } else {
+              intensitiesByRegions[intensity] = [region];
+            }
+            countsRegions[region] = (countsRegions[region] || 0) + 1;
+          }
+        }
+      }
+      
+      // Process ectopic sites - 處理可能的多值情況
+      let intensitiesByRegionsEctopic = {};
+      let countsRegionsEctopic = {};
+      
+      // Group ectopic sites by intensity
+      for (const [site, radioactivities] of Object.entries(data.ectopic)) {
+        // 將每個放射活性值添加到對應強度的列表中
+        for (const radioactivity of radioactivities) {
+          const intensity = mappingIntensity[radioactivity];
+          if (intensity > 0) {
+            const region = site.toLowerCase();
+            
+            if (intensitiesByRegionsEctopic[intensity]) {
+              intensitiesByRegionsEctopic[intensity].push(region);
+            } else {
+              intensitiesByRegionsEctopic[intensity] = [region];
+            }
+            countsRegionsEctopic[region] = (countsRegionsEctopic[region] || 0) + 1;
+          }
+        }
+      }
+      
+      // Process findings for intensity
+      let listFindingsIntensity = [];
+      
+      // 對於相同的部位，只選擇最高強度的，但保留其原始數量
+      const allRegionsUnique = {};
+      const regionCounts = {};
+      
+      // 先計算每個部位出現的總次數
+      for (let intensity of ['4', '3', '2']) {
+        const thyroidRegions = intensitiesByRegions[intensity] || [];
+        const ectopicRegions = intensitiesByRegionsEctopic[intensity] || [];
+        
+        for (const region of [...thyroidRegions, ...ectopicRegions]) {
+          regionCounts[region] = (regionCounts[region] || 0) + 1;
+        }
+      }
+      
+      // 從高到低強度處理，確保每個部位只取最高強度
+      for (let intensity of ['4', '3', '2']) {
+        const thyroidRegions = intensitiesByRegions[intensity] || [];
+        const ectopicRegions = intensitiesByRegionsEctopic[intensity] || [];
+        
+        // 處理每個部位
+        for (const region of [...thyroidRegions, ...ectopicRegions]) {
+          // 如果這個部位尚未被更高強度收集，則添加
+          if (!allRegionsUnique[region]) {
+            allRegionsUnique[region] = {
+              intensity: parseInt(intensity),
+              count: regionCounts[region]
+            };
+          }
+        }
+      }
+      
+      // 按強度分組，同時保留計數信息
+      const groupedByIntensity = { '4': {}, '3': {}, '2': {} };
+      for (const [region, data] of Object.entries(allRegionsUnique)) {
+        groupedByIntensity[data.intensity][region] = data.count;
+      }
+      
+      // 生成 findings 文本
+      for (let intensity of ['4', '3', '2']) {
+        const regions = Object.keys(groupedByIntensity[intensity]);
+        if (regions.length > 0) {
+          listFindingsIntensity.push(
+            mappingFindingsIntensities[intensity] + getConjunctedText(regions) + " regions"
+          );
+        }
+      }
+      
+      // Make singular if only one region and only appears once
+      listFindingsIntensity = listFindingsIntensity.map(x => {
+        if (!x.includes('and')) {
+          // 提取部位名稱
+          const region = x.split('in ')[1].split(' regions')[0].trim();
+          // 雙側區域保持複數形式
+          if (region.toLowerCase().includes('bilateral')) {
+            return x;
+          }
+          // 檢查該部位是否只出現一次
+          const totalCount = Object.values(groupedByIntensity).reduce((sum, intensityGroup) => {
+            return sum + (intensityGroup[region] || 0);
+          }, 0);
+          
+          return x.replace('regions', 'region');
+        }
+        return x;
+      });
+      
+      // 確保 findings 不重複顯示相同部位
+      // 將強度從高到低排序，保證相同部位只在最高強度中顯示
+      const finalFindings = [];
+      const seenRegions = new Set();
+      
+      for (let intensity of ['4', '3', '2']) {
+        const findings = listFindingsIntensity.find(x => x.includes(mappingFindingsIntensities[intensity]));
+        if (!findings) continue;
+        
+        // 提取此強度下的所有部位
+        const intensityRegions = Object.keys(groupedByIntensity[intensity]);
+        
+        // 過濾出尚未出現在更高強度的部位
+        const newRegions = intensityRegions.filter(r => !seenRegions.has(r));
+        
+        if (newRegions.length === 0) continue;
+        
+        // 將這些部位標記為已處理
+        newRegions.forEach(r => seenRegions.add(r));
+        
+        // 生成新的 findings 文本
+        if (newRegions.length === 1) {
+          // 判斷是否為雙側區域，雙側區域使用複數形式
+          const region = newRegions[0].toLowerCase();
+          if (region.includes('bilateral')) {
+            finalFindings.push(mappingFindingsIntensities[intensity] + getConjunctedText(newRegions) + " regions");
+          } else {
+            finalFindings.push(mappingFindingsIntensities[intensity] + getConjunctedText(newRegions) + " region");
+          }
+        } else {
+          finalFindings.push(mappingFindingsIntensities[intensity] + getConjunctedText(newRegions) + " regions");
+        }
+      }
+      
+      // Process forearm findings - 修改處理陣列數據
+      let textFindingsForearm = '';
+      let hotSpots = 0;
+      let faintSpots = 0;
+      let suspiciousSpots = 0;
+      let rightSpots = 0;
+      let leftSpots = 0;
+      
+      for (const [site, statuses] of Object.entries(data.forearm)) {
+        // 遍歷每個部位的所有狀態
+        for (const status of statuses) {
+          if (status.includes('Hot')) {
+            hotSpots++;
+          }
+          if (status.includes('Faint')) {
+            faintSpots++;
+          }
+          if (status.includes('Suspicious')) {
+            suspiciousSpots++;
+          }
+          
+          if (site === 'Right forearm' && status.includes('spot')) {
+            rightSpots++;
+          }
+          if (site === 'Left forearm' && status.includes('spot')) {
+            leftSpots++;
+          }
+        }
+      }
+      
+      if (hotSpots > 0 && (faintSpots > 0 || suspiciousSpots > 0)) {
+        textFindingsForearm = 'Hot and faint spots in ';
+      } else if (hotSpots > 0) {
+        textFindingsForearm = 'Hot spots in ';
+      } else if (faintSpots + suspiciousSpots > 0) {
+        textFindingsForearm = 'Faint spots in ';
+      }
+      
+      if (rightSpots > 0 && leftSpots > 0) {
+        textFindingsForearm = textFindingsForearm + 'bilateral forearms are also noted. ';
+      } else if (rightSpots > 0) {
+        textFindingsForearm = textFindingsForearm + 'right forearm are noted. ';
+      } else if (leftSpots > 0) {
+        textFindingsForearm = textFindingsForearm + 'left forearm are noted. ';
+      } else if (data.forearm['Right forearm'] && data.forearm['Right forearm'].includes('Not found')) {
+        textFindingsForearm = "No abnormally increased uptake is found in the right forearm. ";
+      } else if (data.forearm['Left forearm'] && data.forearm['Left forearm'].includes('Not found')) {
+        textFindingsForearm = "No abnormally increased uptake is found in the left forearm. ";
+      }
+      
+      // Combine all findings
+      let textFindings = '';
+      let textNotIncreasedFindings = '';
+      
+      // 處理"Not increased"的部位
+      if (notIncreasedSites.length > 0) {
+        textNotIncreasedFindings = 'Nodular lesion in ' + getConjunctedText(notIncreasedSites, ' region', ' regions') + ' on CT, without abnormally increased radioactivity. ';
+      }
+      
+      const textFindingsIntensity = finalFindings.join('; ');
+      
+      if (textFindingsIntensity === '' && textNotIncreasedFindings === '') {
+        textFindings = 'Tc-99m sestamibi parathyroid scan with chest SPECT shows no abnormal radiotracer accumulation in the anterior neck or mediastinum.';
+      } else {
+        if (textFindingsIntensity !== '') {
+          textFindings = 'Tc-99m sestamibi parathyroid scan with chest SPECT shows ' + textFindingsIntensity + '. ';
+        } else {
+          textFindings = 'Tc-99m sestamibi parathyroid scan with chest SPECT shows no abnormal radiotracer accumulation in the anterior neck or mediastinum. ';
+        }
+        
+        // 加入"Not increased"的發現
+        if (textNotIncreasedFindings !== '') {
+          textFindings += textNotIncreasedFindings;
+        }
+      }
+      
+      if (textFindingsForearm.length > 0) {
+        textFindings = textFindings + "\n" + textFindingsForearm;
+      }
+      
+      // Generate impressions
+      let listImpressions = [];
+      
+      // Process thyroid-only sites for impression
+      for (const [site, radioactivities] of Object.entries(data.thyroidOnly)) {
+        // 選擇最高強度的狀態
+        let highestIntensity = 0;
+        let selectedRadioactivity = '';
+        
+        for (const radioactivity of radioactivities) {
+          const intensity = mappingIntensity[radioactivity];
+          if (intensity > highestIntensity) {
+            highestIntensity = intensity;
+            selectedRadioactivity = radioactivity;
+          }
+        }
+        
+        // 檢查是否有多個發現（同一側多次記錄）
+        const hasMultiple = radioactivities.length > 1;
+        const noduleText = hasMultiple ? 'nodules' : 'nodule';
+        
+        if (site === 'Left') {
+          if (selectedRadioactivity === 'Increased') {
+            listImpressions.push(`Possible left thyroid ${noduleText}, but intrathyroidal parathyroid adenoma cannot be excluded.`);
+          } else if (selectedRadioactivity === 'Mildly increased') {
+            listImpressions.push(`Possible left thyroid ${noduleText}, but intrathyroidal parathyroid adenoma cannot be excluded completely.`);
+          }
+        } else if (site === 'Right') {
+          if (selectedRadioactivity === 'Increased') {
+            listImpressions.push(`Possible right thyroid ${noduleText}, but intrathyroidal parathyroid adenoma cannot be excluded.`);
+          } else if (selectedRadioactivity === 'Mildly increased') {
+            listImpressions.push(`Possible right thyroid ${noduleText}, but intrathyroidal parathyroid adenoma cannot be excluded completely.`);
+          }
+        }
+      }
+      
+      // 檢查是否左右兩側甲狀腺都有發現，如果是則合併為雙側描述
+      let leftThyroidImpression = listImpressions.find(imp => imp.includes('left thyroid nodule'));
+      let rightThyroidImpression = listImpressions.find(imp => imp.includes('right thyroid nodule'));
+      
+      if (leftThyroidImpression && rightThyroidImpression) {
+        // 移除個別的左右側描述
+        listImpressions = listImpressions.filter(imp => 
+          !imp.includes('left thyroid nodule') && !imp.includes('right thyroid nodule')
+        );
+        
+        // 檢查嚴重程度 - 如果任一側是 Increased，整體就不用 "completely"
+        const hasIncreased = leftThyroidImpression.includes('cannot be excluded.') || 
+                             rightThyroidImpression.includes('cannot be excluded.');
+        
+        // 使用複數 nodules 因為涉及兩側
+        let bilateralImpression = '';
+        if (hasIncreased) {
+          bilateralImpression = 'Possible bilateral thyroid nodules, but intrathyroidal parathyroid adenoma cannot be excluded.';
+        } else {
+          bilateralImpression = 'Possible bilateral thyroid nodules, but intrathyroidal parathyroid adenoma cannot be excluded completely.';
+        }
+        
+        // 添加雙側描述
+        listImpressions.push(bilateralImpression);
+      } else {
+        // 修改單側甲狀腺的表述，檢查數量
+        for (const [site, radioactivities] of Object.entries(data.thyroidOnly)) {
+          // 如果同一側有多個發現
+          if (radioactivities.length > 1) {
+            const side = site.toLowerCase();
+            // 找到對應的 impression
+            const index = listImpressions.findIndex(imp => 
+              imp.includes(`${side} thyroid nodule`)
+            );
+            
+            if (index !== -1) {
+              // 替換為複數形式
+              listImpressions[index] = listImpressions[index].replace(
+                `${side} thyroid nodule`, 
+                `${side} thyroid nodules`
+              );
+            }
+          }
+        }
+      }
+      
+      // 處理"Not increased"的部位的Impression
+      // 將 notIncreasedSites 分為標準甲狀腺部位和異位部位
+      const normalNotIncreasedSites = notIncreasedSites.filter(site => 
+        THYROID_SITES.some(thyroidSite => site.toLowerCase().includes(thyroidSite.toLowerCase()))
+      );
+      
+      const ectopicNotIncreasedSites = notIncreasedSites.filter(site => 
+        ECTOPIC_SITES.some(ectopicSite => site.toLowerCase().includes(ectopicSite.toLowerCase()))
+      );
+      
+      // 創建 notIncreasedImpressions 數組，用於存儲 "Not increased" 的印象
+      let notIncreasedImpressions = [];
+      
+      // 按照範例代碼邏輯處理不同情況
+      if (normalNotIncreasedSites.length > 1 && ectopicNotIncreasedSites.length === 0) {
+        notIncreasedImpressions.push(
+          'Nodular lesions in ' + getConjunctedText(normalNotIncreasedSites, ' region', ' regions') + 
+          ' on CT. Parathyroid adenomas and/or hyperplasia cannot be excluded completely.'
+        );
+      } else if (normalNotIncreasedSites.length === 1 && ectopicNotIncreasedSites.length === 0) {
+        notIncreasedImpressions.push(
+          'Nodular lesion in ' + normalNotIncreasedSites[0] + ' region on CT. ' +
+          'Parathyroid adenoma or hyperplasia cannot be excluded completely.'
+        );
+      } else if (normalNotIncreasedSites.length === 0 && ectopicNotIncreasedSites.length > 1) {
+        notIncreasedImpressions.push(
+          'Nodular lesions in ' + getConjunctedText(ectopicNotIncreasedSites, ' region', ' regions') + 
+          ' on CT. Ectopic parathyroid nodules cannot be excluded completely.'
+        );
+      } else if (normalNotIncreasedSites.length === 0 && ectopicNotIncreasedSites.length === 1) {
+        notIncreasedImpressions.push(
+          'Nodular lesion in ' + ectopicNotIncreasedSites[0] + ' region on CT. ' +
+          'Ectopic parathyroid nodule cannot be excluded completely.'
+        );
+      } else if (normalNotIncreasedSites.length > 0 && ectopicNotIncreasedSites.length > 0) {
+        notIncreasedImpressions.push(
+          'Nodular lesions in ' + getConjunctedText([...normalNotIncreasedSites, ...ectopicNotIncreasedSites], ' region', ' regions') + 
+          ' on CT. Parathyroid adenomas, hyperplasia, and/or ectopic parathyroid nodules cannot be excluded completely.'
+        );
+      }
+      
+      // 為甲狀腺部位收集所有區域，並按強度分組
+      const thyroidRegionsByIntensity = { '4': {}, '3': {}, '2': {} };
+      
+      // 計數每個部位出現的次數
+      const originalRegionCounts = {};
+      for (const intensity in intensitiesByRegions) {
+        for (const region of intensitiesByRegions[intensity]) {
+          originalRegionCounts[region] = (originalRegionCounts[region] || 0) + 1;
+        }
+      }
+      
+      // 從高到低強度處理所有甲狀腺部位，確保每個部位只使用最高強度
+      for (let intensity of ['4', '3', '2']) {
+        if (Object.keys(intensitiesByRegions).includes(intensity)) {
+          // 僅處理標準甲狀腺部位，不包括 thyroid-only 部位
+          const regionsToProcess = intensitiesByRegions[intensity].filter(region => {
+            return !region.endsWith(' thyroid') || region.includes(' superior') || region.includes(' posterior') || region.includes(' inferior');
+          });
+          
+          for (const region of regionsToProcess) {
+            // 只有當這個部位尚未被更高強度收集時，才添加
+            if (!Object.values(thyroidRegionsByIntensity).some(intMap => region in intMap)) {
+              thyroidRegionsByIntensity[intensity][region] = originalRegionCounts[region] || 0;
+            }
+          }
+        }
+      }
+      
+      // 為每個強度生成印象
+      for (let intensity of ['4', '3', '2']) {
+        const uniqueRegions = Object.keys(thyroidRegionsByIntensity[intensity]);
+        
+        if (uniqueRegions.length === 0) continue;
+        
+        // 檢查是否有任何部位出現多次或有多個不同部位
+        const hasMultiple = uniqueRegions.length > 1 || 
+                           Object.values(thyroidRegionsByIntensity[intensity]).some(count => count > 1);
+        
+        let impression = '';
+        if (intensity === '4') {
+          impression = 'Suspect p';
+        } else {
+          impression = 'P';
+        }
+        
+        // 根據是否多個部位或同一部位多次，決定使用單數或複數形式
+        if (hasMultiple) {
+          impression += 'arathyroid adenomas and/or hyperplasia in ';
+        } else {
+          impression += 'arathyroid adenoma or hyperplasia in ';
+        }
+        
+        impression += getConjunctedText(uniqueRegions, ' region', ' regions');
+        
+        if (intensity === '4') {
+          impression += '.';
+        } else if (intensity === '3') {
+          impression += ' cannot be excluded. ';
+        } else {
+          impression += ' cannot be excluded completely. ';
+        }
+        
+        listImpressions.push(impression);
+      }
+      
+      // 為異位部位做類似處理
+      const ectopicRegionsByIntensity = { '4': {}, '3': {}, '2': {} };
+      
+      // 計數每個異位部位出現的次數
+      const originalEctopicCounts = {};
+      for (const intensity in intensitiesByRegionsEctopic) {
+        for (const region of intensitiesByRegionsEctopic[intensity]) {
+          originalEctopicCounts[region] = (originalEctopicCounts[region] || 0) + 1;
+        }
+      }
+      
+      let listImpressionsEctopic = [];
+      
+      // 從高到低強度處理所有異位部位，確保每個部位只使用最高強度
+      for (let intensity of ['4', '3', '2']) {
+        if (Object.keys(intensitiesByRegionsEctopic).includes(intensity)) {
+          for (const region of intensitiesByRegionsEctopic[intensity]) {
+            // 只有當這個部位尚未被更高強度收集時，才添加
+            if (!Object.values(ectopicRegionsByIntensity).some(intMap => region in intMap)) {
+              ectopicRegionsByIntensity[intensity][region] = originalEctopicCounts[region] || 0;
+            }
+          }
+        }
+      }
+      
+      // 為每個強度生成異位部位的印象
+      for (let intensity of ['4', '3', '2']) {
+        const uniqueRegions = Object.keys(ectopicRegionsByIntensity[intensity]);
+        
+        if (uniqueRegions.length === 0) continue;
+        
+        // 檢查是否有任何部位出現多次或有多個不同部位
+        const hasMultiple = uniqueRegions.length > 1 || 
+                           Object.values(ectopicRegionsByIntensity[intensity]).some(count => count > 1);
+        
+        let impression = '';
+        if (intensity === '4') {
+          impression = 'Suspect e';
+        } else {
+          impression = 'E';
+        }
+        
+        // 根據是否多個部位或同一部位多次，決定使用單數或複數形式
+        if (hasMultiple) {
+          impression += 'ctopic parathyroid tissues in ';
+        } else {
+          impression += 'ctopic parathyroid tissue in ';
+        }
+        
+        impression += getConjunctedText(uniqueRegions, ' region', ' regions');
+        
+        if (intensity === '4') {
+          impression += '.';
+        } else if (intensity === '3') {
+          impression += ' cannot be excluded. ';
+        } else {
+          impression += ' cannot be excluded completely. ';
+        }
+        
+        listImpressionsEctopic.push(impression);
+      }
+      
+      // Combine ectopic impressions with thyroid impressions
+      if (listImpressionsEctopic.length > 0 && listImpressions.length > 0) {
+        // 找出非 thyroid-only 部分的 listImpressions
+        const nonThyroidOnlyImpressions = listImpressions.filter(impression => 
+          !impression.includes('Possible') || !impression.includes('thyroid nodule')
+        );
+        
+        // 如果有 thyroid-only impressions，先保留它們
+        const thyroidOnlyImpressions = listImpressions.filter(impression => 
+          impression.includes('Possible') && impression.includes('thyroid nodule')
+        );
+        
+        // 處理合併邏輯
+        if (nonThyroidOnlyImpressions.length > 0) {
+          const maxEctopicIntensity = Math.max(...Object.keys(intensitiesByRegionsEctopic).map(x => parseInt(x)));
+          const standardThyroidKeys = Object.keys(intensitiesByRegions).filter(key => 
+            intensitiesByRegions[key].some(region => 
+              !region.endsWith(' thyroid') || region.includes(' superior') || region.includes(' posterior') || region.includes(' inferior')
+            )
+          );
+          const maxRegularIntensity = standardThyroidKeys.length > 0 ? Math.max(...standardThyroidKeys.map(x => parseInt(x))) : 0;
+          
+          if (maxEctopicIntensity > maxRegularIntensity) {
+            listImpressions = [...thyroidOnlyImpressions, ...listImpressionsEctopic, ...nonThyroidOnlyImpressions];
+          } else {
+            listImpressions = [...thyroidOnlyImpressions, ...nonThyroidOnlyImpressions, ...listImpressionsEctopic];
+          }
+        } else {
+          listImpressions = [...thyroidOnlyImpressions, ...listImpressionsEctopic];
+        }
+      } else {
+        listImpressions = listImpressions.concat(listImpressionsEctopic);
+      }
+      
+      // Forearm impression
+      let textImpressionForearm = '';
+      if (textFindingsForearm.includes("Hot")) {
+        textImpressionForearm = "Possible hyperfunctioning transplanted parathyroid tissues in " +
+          textFindingsForearm.split(" in ")[1].split(' are ')[0];
+        textImpressionForearm = textImpressionForearm.trim() + ". ";
+      } else if (textFindingsForearm.includes("Faint")) {
+        textImpressionForearm = "Hyperfunctioning transplanted parathyroid tissues in " +
+          textFindingsForearm.split(" in ")[1].split(' are ')[0] + ' cannot be excluded' +
+          (faintSpots > 0 ? '. ' : ' completely. ');
+      }
+      
+      if (textFindingsForearm.includes("Hot")) {
+        listImpressions = [textImpressionForearm].concat(listImpressions);
+      } else if ((rightSpots + leftSpots > 0) && textFindings.includes('no abnormal')) {
+        listImpressions = [textImpressionForearm].concat(listImpressions);
+      } else if (rightSpots + leftSpots > 0) {
+        listImpressions.push(textImpressionForearm);
+      }
+      
+      // 將 "Not increased" 的印象添加到最後
+      listImpressions = listImpressions.concat(notIncreasedImpressions);
+      
+      // Format impression with numbering
+      let textImpression = '';
+      listImpressions.forEach((item, index) => {
+        textImpression = textImpression + (index + 1).toString() + '] ' + item + '\n';
+      });
+      
+      // Handle empty impressions
+      textImpression = textImpression.length > 0 ? textImpression : (
+        textFindings.includes('No abnormally increased uptake is found in the ') ?
+          '1] No evidence of parathyroid adenoma or hyperplasia in the anterior neck and the mediastinum. \n' +
+          '2] No evidence of hyperfunctioning transplanted parathyroid tissues in the ' + (textFindings.includes('left forearm') ? 'left forearm. ' : 'right forearm. ') :
+          'No evidence of parathyroid adenoma or hyperplasia in the anterior neck and the mediastinum. '
+      );
+      
+      textImpression = textImpression.trim();
+      if (textImpression.split('\n').length == 1) {
+        textImpression = textImpression.replace('1] ', '');
+      }
+      
+      // Fix phrasing
+      textFindings = textFindings.replace(/ in the /g, ' in ').replace(/ in /g, ' in the ');
+      textImpression = textImpression.replace(/ in the /g, ' in ').replace(/ in /g, ' in the ');
+      
+      // 替換左右兩側相同區域為雙側描述 - 完全修復版
+      textFindings = replaceBilateralRegions(textFindings);
+      textImpression = replaceBilateralRegions(textImpression);
+      
+      return {
+        findings: textFindings,
+        impression: textImpression
+      };
+    }
+    
+    // 替換左右兩側相同區域為雙側描述 - 完全修復版
+    function replaceBilateralRegions(text) {
+      if (!text) return text;
+      
+      const regionsToReplace = ['inferior', 'superior', 'posterior', 'thyroid'];
+      let modifiedText = text;
+      
+      // 步驟1: 先替換左右兩側的表述為標準的雙側形式
+      for (const region of regionsToReplace) {
+        // 所有可能的模式
+        const patterns = [
+          `left\\s+${region}\\s+and\\s+right\\s+${region}`,
+          `right\\s+${region}\\s+and\\s+left\\s+${region}`,
+          `left\\s+${region},\\s*right\\s+${region}`,
+          `right\\s+${region},\\s*left\\s+${region}`,
+          `left\\s+${region},\\s*and\\s+right\\s+${region}`,
+          `right\\s+${region},\\s*and\\s+left\\s+${region}`
+        ];
+        
+        // 替換為標準雙側形式 - 使用單數形式
+        for (const pattern of patterns) {
+          modifiedText = modifiedText.replace(
+            new RegExp(pattern, 'gi'), 
+            `bilateral ${region}`
+          );
+        }
+      }
+      
+      // 步驟2: 清理所有多餘的複數形式
+      // 處理 region/regions 的複數形式
+      modifiedText = modifiedText.replace(/(\bregion)ss\b/gi, '$1s');
+      
+      // 處理具體部位的複數形式 (inferior/superior/posterior)
+      for (const region of regionsToReplace) {
+        // 移除多餘的"s" - 如 inferiors -> inferior
+        modifiedText = modifiedText.replace(
+          new RegExp(`bilateral\\s+${region}s\\b`, 'gi'), 
+          `bilateral ${region}`
+        );
+      }
+      
+      // 步驟3: 確保 "bilateral xxx" 後面有 "regions"
+      for (const region of regionsToReplace) {
+        // 確保 "bilateral xxx" 後面有 "regions"
+        modifiedText = modifiedText.replace(
+          new RegExp(`bilateral\\s+${region}\\s+region\\b`, 'gi'),
+          `bilateral ${region} regions`
+        );
+        
+        // 確保單獨出現的 "bilateral xxx" 後面加上 "regions"
+        modifiedText = modifiedText.replace(
+          new RegExp(`(in|of|at)\\s+the\\s+bilateral\\s+${region}\\b(?!\\s+region)`, 'gi'),
+          `$1 the bilateral ${region} regions`
+        );
+      }
+      
+      return modifiedText;
+    }
+    
+    // Helper function to create conjuncted text
+    function getConjunctedText(textList, postfixSingular = '', postfixPlural = '', separator = ", ") {
+      if (textList.length === 0) {
+        return '';
+      } 
+      
+      // 檢測並處理左右兩側相同區域，預先處理為雙側
+      const processedList = processBilateralItems(textList);
+      
+      // 使用處理後的列表
+      if (processedList.length === 1) {
+        // 如果是雙側區域，使用複數形式
+        const item = processedList[0];
+        if (item.toLowerCase().includes('bilateral')) {
+          // 不再添加額外的's'
+          return item;
+        }
+        return item + postfixSingular;
+      } else if (processedList.length === 2) {
+        // 按指定順序排序後再連接
+        const sortedList = sortRegions(processedList);
+        return sortedList.join(' and ') + postfixPlural;
+      } else {
+        // 按指定順序排序後再連接
+        const sortedList = sortRegions(processedList);
+        return sortedList.slice(0, sortedList.length - 1).join(separator) + separator + "and " + sortedList[sortedList.length - 1] + postfixPlural;
+      }
+    }
+    
+    // 處理可能成對的左右兩側項目
+    function processBilateralItems(items) {
+      if (!items || items.length <= 1) return items;
+      
+      const result = [...items]; // 複製原列表
+      const regionsToCheck = ['inferior', 'superior', 'posterior', 'thyroid'];
+      
+      // 檢查每一對可能的左右項目
+      for (const region of regionsToCheck) {
+        // 查找左側和右側項目的索引
+        let leftIndex = -1;
+        let rightIndex = -1;
+        
+        for (let i = 0; i < result.length; i++) {
+          const item = result[i].toLowerCase();
+          if (item.includes('left') && item.includes(region)) {
+            leftIndex = i;
+          }
+          if (item.includes('right') && item.includes(region)) {
+            rightIndex = i;
+          }
+        }
+        
+        // 如果找到成對的左右項目，替換它們
+        if (leftIndex !== -1 && rightIndex !== -1) {
+          // 創建新的雙側項目 - 使用單數形式
+          const bilateralItem = `bilateral ${region}`;
+          
+          // 如果左右索引相鄰且較大的索引在前
+          const maxIndex = Math.max(leftIndex, rightIndex);
+          const minIndex = Math.min(leftIndex, rightIndex);
+          
+          // 從數組中移除兩個項目，並添加新的雙側項目
+          result.splice(maxIndex, 1); // 先移除較大索引
+          result.splice(minIndex, 1); // 再移除較小索引
+          result.push(bilateralItem); // 添加新項目
+        }
+      }
+      
+      return result;
+    }
+    
+    // 區域排序函數
+    function sortRegions(regions) {
+      // 定義區域優先級順序
+      const regionPriority = {
+        'superior': 1,
+        'posterior': 2,
+        'inferior': 3,
+        'forearm': 4,
+        'cervical': 5,
+        'paratracheal': 6,
+        'retrosternal': 7,
+        'anterior mediastinal': 8,
+        'mediastinal': 9
+      };
+      
+      // 複製數組避免修改原始數據
+      return [...regions].sort((a, b) => {
+        // 提取左右信息和區域信息
+        const aLower = a.toLowerCase();
+        const bLower = b.toLowerCase();
+        
+        // 檢查是否包含 right 或 left
+        const aHasRight = aLower.includes('right');
+        const bHasRight = bLower.includes('right');
+        const aHasLeft = aLower.includes('left');
+        const bHasLeft = bLower.includes('left');
+        
+        // 如果一個是右側而另一個是左側，右側優先
+        if (aHasRight && bHasLeft) return -1;
+        if (aHasLeft && bHasRight) return 1;
+        
+        // 獲取區域部分的優先級
+        let aPriority = 100; // 預設優先級較低
+        let bPriority = 100;
+        
+        // 尋找匹配度最高的區域關鍵詞
+        for (const [region, priority] of Object.entries(regionPriority)) {
+          if (aLower.includes(region) && priority < aPriority) {
+            aPriority = priority;
+          }
+          if (bLower.includes(region) && priority < bPriority) {
+            bPriority = priority;
+          }
+        }
+        
+        // 按區域優先級排序
+        return aPriority - bPriority;
+      });
+    }
+    
+    // Copy report to clipboard
+    async function copyReport(type) {
+      try {
+        const element = document.getElementById(`${type}-report`);
+        const text = element.textContent;
+        
+        if (!text) {
+          throw new Error('無報告內容可複製');
+        }
+        
+        // Create and append textarea
+        const textArea = document.createElement('textarea');
+        textArea.value = text;
+        textArea.style.position = 'fixed';
+        textArea.style.opacity = '0';
+        document.body.appendChild(textArea);
+        
+        // Select and copy
+        textArea.focus();
+        textArea.select();
+        
+        try {
+          await navigator.clipboard.writeText(text);
+          console.log('使用 Clipboard API 複製成功');
+        } catch (clipError) {
+          console.log('Clipboard API 失敗:', clipError);
+          const success = document.execCommand('copy');
+          console.log('execCommand 結果:', success);
+          if (!success) {
+            throw new Error('execCommand 失敗');
+          }
+        }
+        
+        // Cleanup
+        document.body.removeChild(textArea);
+        showNotification('已複製到剪貼板');
+        
+      } catch (err) {
+        console.error('複製失敗:', err);
+        showNotification(`複製失敗: ${err.message}`);
+      }
+    }
+    
+    // Clear the table
+    function clearTable() {
+      // 清空表格但保持至少一個空行
+      hot.loadData([['', '']]);
+      
+      // 確保沒有預設值
+      for (let i = 0; i < hot.countRows(); i++) {
+        const site = hot.getDataAtCell(i, 0);
+        // 如果 site 為空但 radioactivity 有值，則清空 radioactivity
+        if (!site && hot.getDataAtCell(i, 1)) {
+          hot.setDataAtCell(i, 1, '');
+        }
+      }
+      
+      // 清除表格後重新生成報告
+      generateReport();
+      
+      showNotification('表格已清除');
+    }
+    
+    // Show notification
+    function showNotification(message) {
+      const notification = document.getElementById('notification');
+      notification.textContent = message;
+      notification.style.display = 'block';
+      setTimeout(() => {
+        notification.style.display = 'none';
+      }, 2000);
+    }
+    
+    // Initialize when page loads
+    document.addEventListener('DOMContentLoaded', function() {
+      // 不再需要初始化 locationStatusMap
+      // initLocationMap();
+      
+      initHandsontable();
+      
+      // 初始化跨域通信監聽器
+      initCrossOriginCommunication();
+    });
+    
+    // 初始化跨域通信，監聽來自父頁面的訊息
+    function initCrossOriginCommunication() {
+      window.addEventListener('message', function(event) {
+        // 實際使用時建議檢查 event.origin 確保訊息來自可信任的域名
+        // if (event.origin !== 'https://trusted-domain.com') return;
+        
+        try {
+          const message = event.data;
+          console.log('從父頁面收到訊息:', message);
+          
+          // 根據訊息類型執行對應操作
+          if (message && message.action) {
+            switch (message.action) {
+              case 'clearTable':
+                clearTable();
+                break;
+              case 'copyFindings':
+                copyReport('findings');
+                break;
+              case 'copyImpression':
+                copyReport('impression');
+                break;
+              case 'getReports':
+                // 發送目前的報告資料到父頁面
+                const findings = document.getElementById('findings-report').textContent;
+                const impression = document.getElementById('impression-report').textContent;
+                sendReportsToParent({ findings, impression });
+                break;
+              case 'importData':
+                // 接收從父頁面傳來的表格資料並導入
+                if (message.tableData && Array.isArray(message.tableData)) {
+                  importTableData(message.tableData);
+                }
+                break;
+              case 'exportData':
+                exportTableData();
+                break;
+              default:
+                console.log('未知的操作類型:', message.action);
+            }
+          }
+        } catch (error) {
+          console.error('處理來自父頁面的訊息時發生錯誤:', error);
+        }
+      }, false);
+    }
+    
+    // 匯入表格資料
+    function importTableData(data) {
+      if (!data || !Array.isArray(data)) return;
+      
+      // 確保資料格式正確 (至少有一列兩欄)
+      const validData = data.filter(row => Array.isArray(row) && row.length >= 2);
+      
+      if (validData.length === 0) {
+        validData.push(['', '']); // 至少保留一個空行
+      }
+      
+      // 載入資料到表格
+      hot.loadData(validData);
+      
+      // 資料載入後重新生成報告
+      setTimeout(() => {
+        generateReport();
+      }, 100);
+      
+      showNotification('已匯入表格資料');
+    }
+  </script>
+</body>
+</html>
