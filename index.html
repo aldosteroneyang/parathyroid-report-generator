@@ -684,10 +684,18 @@
             });
           }
           
-          // 自動生成報告，無需點擊按鈕
-          setTimeout(() => {
+          // 不再使用不確定的延遲，在 afterRender 事件中處理報告生成
+          // setTimeout(() => {
+          //   generateReport();
+          // }, 100);
+        },
+        // 新增 afterRender 事件，確保表格完全渲染後再生成報告
+        afterRender: function() {
+          // 使用 requestAnimationFrame 確保在下一個渲染循環中生成報告
+          // 這比 setTimeout 更可靠，因為它會在瀏覽器空閒時執行
+          requestAnimationFrame(function() {
             generateReport();
-          }, 100);
+          });
         },
         afterValidate: function(isValid, value, row, prop) {
           // 在儲存格驗證後，確保 radioactivity 與 site 類型匹配
@@ -1512,6 +1520,109 @@
       textFindings = replaceBilateralRegions(textFindings);
       textImpression = replaceBilateralRegions(textImpression);
       
+      
+      // 修正前臂的描述
+      // 定義 leftForearmStatus 和 rightForearmStatus
+      let leftForearmStatus = "Not found";
+      let rightForearmStatus = "Not found";
+      
+      // 收集左前臂的所有放射活性值
+      let leftHotCount = 0;
+      let leftFaintCount = 0;
+      let leftSuspiciousCount = 0;
+      let rightHotCount = 0;
+      let rightFaintCount = 0;
+      let rightSuspiciousCount = 0;
+      
+      // 檢查左前臂
+      if (data.forearm['Left forearm']) {
+        const leftStatuses = Array.isArray(data.forearm['Left forearm']) ? 
+                        data.forearm['Left forearm'] : [data.forearm['Left forearm']];
+                        
+        for (const status of leftStatuses) {
+          if (status.includes('Hot')) leftHotCount++;
+          if (status.includes('Faint')) leftFaintCount++;
+          if (status.includes('Suspicious')) leftSuspiciousCount++;
+        }
+        
+        // 根據計數確定狀態
+        if ((leftHotCount > 0 && leftFaintCount > 0) || 
+            leftStatuses.some(s => s.includes('Hot and faint'))) {
+          leftForearmStatus = "Hot and faint spots";
+        } else if (leftHotCount > 2 || leftStatuses.includes('Hot spots')) {
+          leftForearmStatus = "Hot spots";
+        } else if (leftFaintCount > 2 || leftStatuses.includes('Faint spots')) {
+          leftForearmStatus = "Faint spots";  
+        } else if (leftHotCount === 1) {
+          leftForearmStatus = "Hot spot";
+        } else if (leftFaintCount === 1) {
+          leftForearmStatus = "Faint spot";
+        } else if (leftSuspiciousCount > 0) {
+          leftForearmStatus = "Suspicious spot";
+        } else if (leftStatuses.includes('Not found')) {
+          leftForearmStatus = "Not found";
+        }
+      }
+      
+      // 檢查右前臂
+      if (data.forearm['Right forearm']) {
+        const rightStatuses = Array.isArray(data.forearm['Right forearm']) ? 
+                        data.forearm['Right forearm'] : [data.forearm['Right forearm']];
+                        
+        for (const status of rightStatuses) {
+          if (status.includes('Hot')) rightHotCount++;
+          if (status.includes('Faint')) rightFaintCount++;
+          if (status.includes('Suspicious')) rightSuspiciousCount++;
+        }
+        
+        // 根據計數確定狀態
+        if ((rightHotCount > 0 && rightFaintCount > 0) || 
+            rightStatuses.some(s => s.includes('Hot and faint'))) {
+          rightForearmStatus = "Hot and faint spots";
+        } else if (rightHotCount > 2 || rightStatuses.includes('Hot spots')) {
+          rightForearmStatus = "Hot spots";
+        } else if (rightFaintCount > 2 || rightStatuses.includes('Faint spots')) {
+          rightForearmStatus = "Faint spots";  
+        } else if (rightHotCount === 1) {
+          rightForearmStatus = "Hot spot";
+        } else if (rightFaintCount === 1) {
+          rightForearmStatus = "Faint spot";
+        } else if (rightSuspiciousCount > 0) {
+          rightForearmStatus = "Suspicious spot";
+        } else if (rightStatuses.includes('Not found')) {
+          rightForearmStatus = "Not found";
+        }
+      }
+      
+      // 修正前臂描述
+      if (leftForearmStatus) {
+        if (leftForearmStatus === 'Hot and faint spots') {
+          textFindings = textFindings.replace(/Hot spots? in the left forearm are noted\./, 'Hot and faint spots in the left forearm are noted.');
+          textFindings = textFindings.replace(/Faint spots? in the left forearm are noted\./, 'Hot and faint spots in the left forearm are noted.');
+        } else if (leftForearmStatus === 'Hot spot') {
+          textFindings = textFindings.replace(/Hot spots in the left forearm are noted\./, 'Hot spot in the left forearm is noted.');
+        } else if (leftForearmStatus === 'Faint spot') {
+          textFindings = textFindings.replace(/Faint spots in the left forearm are noted\./, 'Faint spot in the left forearm is noted.');
+        } else if (leftForearmStatus === 'Suspicious spot') {
+          textFindings = textFindings.replace(/Faint spots? in the left forearm are noted\./, 'Suspicious spot in the left forearm is noted.');
+          textFindings = textFindings.replace(/Hot spots? in the left forearm are noted\./, 'Suspicious spot in the left forearm is noted.');
+        }
+      }
+      
+      if (rightForearmStatus) {
+        if (rightForearmStatus === 'Hot and faint spots') {
+          textFindings = textFindings.replace(/Hot spots? in the right forearm are noted\./, 'Hot and faint spots in the right forearm are noted.');
+          textFindings = textFindings.replace(/Faint spots? in the right forearm are noted\./, 'Hot and faint spots in the right forearm are noted.');
+        } else if (rightForearmStatus === 'Hot spot') {
+          textFindings = textFindings.replace(/Hot spots in the right forearm are noted\./, 'Hot spot in the right forearm is noted.');
+        } else if (rightForearmStatus === 'Faint spot') {
+          textFindings = textFindings.replace(/Faint spots in the right forearm are noted\./, 'Faint spot in the right forearm is noted.');
+        } else if (rightForearmStatus === 'Suspicious spot') {
+          textFindings = textFindings.replace(/Faint spots? in the right forearm are noted\./, 'Suspicious spot in the right forearm is noted.');
+          textFindings = textFindings.replace(/Hot spots? in the right forearm are noted\./, 'Suspicious spot in the right forearm is noted.');
+        }
+      }
+
       return {
         findings: textFindings,
         impression: textImpression
@@ -1755,8 +1866,8 @@
         }
       }
       
-      // 清除表格後重新生成報告
-      generateReport();
+      // 不需要顯式調用 generateReport，afterRender 事件會自動處理
+      // generateReport();
       
       showNotification('表格已清除');
     }
@@ -1777,6 +1888,9 @@
       // initLocationMap();
       
       initHandsontable();
+      
+      // 初始化時生成報告
+      generateReport();
       
       // 初始化跨域通信監聽器
       initCrossOriginCommunication();
@@ -1843,10 +1957,10 @@
       // 載入資料到表格
       hot.loadData(validData);
       
-      // 資料載入後重新生成報告
-      setTimeout(() => {
-        generateReport();
-      }, 100);
+      // 不需要顯式調用 generateReport，afterRender 事件會自動處理
+      // setTimeout(() => {
+      //   generateReport();
+      // }, 100);
       
       showNotification('已匯入表格資料');
     }
